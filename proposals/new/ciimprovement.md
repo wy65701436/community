@@ -15,9 +15,9 @@ single CI system is easy to maintain and easy to learn.
 Currently, there are three CI systems running on Harbor repo that are travis, drone 
 and jenkins. 
 
-*Travis CI executes UI test.
-*Drone CI executes E2E test and packages the installer.
-*Jenkins CI executes full tests daily, it's locates in the VMWare internal network.   
+* Travis CI executes UI test.
+* Drone CI executes E2E test and packages the installer.
+* Jenkins CI executes full tests daily, it's locates in the VMWare internal network.   
 
 Drone is running in the VMWare internal network, and any pull request created by 
 contributor who is not a memeber of VMWare community is not allowed to be executed
