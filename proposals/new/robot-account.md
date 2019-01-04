@@ -1,10 +1,10 @@
-Proposal: Enable Robot accounts in Harbor
+Proposal: Support Robot account in Harbor
 
 Author: Yan Wang
 
 ## Abstract
 
-Robot account is a machine user that have the permission to access harbor resouces, like pull/push docker images. It's a better way to integreate harbor into your CI/CD workflow without using a user account, especially in LDAP mode.
+Robot account is a machine user that have the permission to access harbor resources, like pull/push docker images. It's a better way to integrate harbor into your CI/CD workflow without using a user account, especially in LDAP mode.
 
 ## Motivation
 
@@ -12,11 +12,11 @@ Currently, Harbor only has the capability of using the registered user to access
 
 ## Solution
 
-This proposal only targets on the pull/push images workflow, includs DB, API, authn/authz.
+This proposal only targets on the pull/push images workflow, and the design includes DB, API, authn/authz.
 
 ### DB scheme/model
 
-1, the robot account is not a harbor user, so an new table introduced to store the accounts info.
+1, the robot account is not a harbor user, so an new table introduced to store the robot info.
 
 ```yaml
 
@@ -24,35 +24,17 @@ create table harbor_robot (
  robot_id SERIAL PRIMARY KEY NOT NULL,
  name varchar(255),
  token varchar(255),
- expire varchar(40) NOT NULL,
  project_id int NOT NULL,
  desc varchar(255),
  deleted boolean DEFAULT false NOT NULL,
  creation_time timestamp default CURRENT_TIMESTAMP,
  update_time timestamp default CURRENT_TIMESTAMP,
- UNIQUE (name),
- UNIQUE (token)
+ UNIQUE (name)
 );
 
 ```
 
-2, the permission of robot accounts
-
-```yaml
-
-create table harbor_robot_permission (
-  id SERIAL PRIMARY KEY NOT NULL,
-  robot_id int NOT NULL,
-  project_id int NOT NULL,
-  /*
-   R/W
-  */
-  scope char(1)
-)
-
-```
-
-### API -- managing robot account
+### API
 
 The project admin could manager the robot accounts of the project, all the api are project admin only. 
 
@@ -67,7 +49,11 @@ Data:
   desc: "test1_desc",
   // currently, it always set to p as the robot account is the project level.
   scope: "p",
-  project_id: 1
+  project_id: 1,
+  access: [
+    {"name":"project/repo", "actions":["read"]},
+    {"name":"project/label", "actions":["write"]}
+  ]
 }
 
 ````
@@ -87,36 +73,35 @@ DELETE /api/robots/${id}
 GET /api/robots
 GET /api/robots/${id}
 
+````
+
+4, Update a robot account
 
 ````
 
-### API -- setting permission
-
-1, Adding/Updating permission for a robot account 
-
-````
-
-PUT /api/robots/${id}/permission
-Data:
+PUT /api/robots/${id}
+Data: 
 {
-  project_id: 2,
-  /*
-   R/W
-   R: read
-   W: write
-  */
-  role: R
+  desc: "test1_desc",
 }
 
 ````
 
-2, Deleting permission for a robot account
+5, Update the access of a robot account
 
 ````
 
-DELETE /api/robots/${id}/permission
+PUT /api/robots/${id}
+Data: 
+{
+  access: [
+      {"name":"project/repo", "actions":["write"]}
+  ]
+}
 
 ````
+
+It's actually to issue an new token bases on the updates in the background.
 
 ## Login 
 
@@ -131,12 +116,14 @@ No code change as all the robot accounts are stored in harbor_robots instead of 
 
 ### docker login
 
+To distinguish the robot account from user, it will add a predefined prefix "harborobots" to the name of robot, like "harborobots_example1".
+
 1, with user/pwd
 
 ````
 
 docker login harbor.example.com
-Username: harborrobots_robotexample
+Username: harborobots_robotexample
 Password: rKgjKEMpMEK23zqejkWn5GIVvgJps1vKACTa6tnGXXyOlOTsXFESccDvgaJx047q
 
 ````
@@ -148,19 +135,19 @@ Password: rKgjKEMpMEK23zqejkWn5GIVvgJps1vKACTa6tnGXXyOlOTsXFESccDvgaJx047q
 {
   "auths": {
     “harbor.example.com”: {
-      "auth": "rKgjKEMpMEK23zqejkWn5GIVvgJps1vKACTa6tnGXXyOlOTsXFESccDvgaJx047q",
+      "auth": "Zmcm01Szl2eXc0elJOU2pkaEgvR1YrUjdCUXFIeWtQMTFkWWZXSUV0YU13cWhcbnllZjR1K2dUQytrYk81R002eUhqcmJFUGxHcW03WDU4UWtxd2JDbTdhMllnNi9SM2hl",
     }
   }
 }
 
 ````
 
-### docker login authn
+### AuthN/AuthZ
 
-To distinguish the robot account from user, it will add a predefined prefix "harborrobots" to the name of harbor robots, like "harborrobots_example1".
+- The authn for robot account rely on the DB.
 
-#### Modify the db Authenticate to support robots login.
-The current login on db_auth is hard to extend to support robots as it's user binding, so the easist way to handle this is to add a new login func for robots.
+#### Modify the db authenticate to support robots login.
+The current login on db_auth is hard to extend to support robots as it's user binding, so the easiest way to handle this is to add a new login func(LoginRobot) for robots.
 https://github.com/goharbor/harbor/blob/master/src/core/auth/authenticator.go#L130
 
 ```go
@@ -174,9 +161,9 @@ func LoginRobot(m models.AuthModel) (*models.Robot, error) {
 	if authMode == "" || dao.IsSuperUser(m.Principal) {
 		authMode = common.DBAuth
 	}
-	log.Debug("Current AUTH_MODE is ", authMode)
 
 	authenticator, ok := registry[authMode+"_robot"]
+	log.Debug("Current AUTH_MODE is ", authMode)
 	if !ok {
 		return nil, fmt.Errorf("Unrecognized auth_mode: %s", authMode)
 	}
@@ -203,8 +190,9 @@ func LoginRobot(m models.AuthModel) (*models.Robot, error) {
 
 ````
 
-secretReqCtxModifier => robotsReqCtxModifier => basicAuthReqCtxModifier =>  unauthorizedReqCtxModifier
-robotsReqCtxModifier --- robot auth -- DB (harbor_robots)
+secretReqCtxModifier => robotsReqCtxModifier => basicAuthReqCtxModifier =>  sessionReqCtxModifier => unauthorizedReqCtxModifier
+
+robotsReqCtxModifier --- robot login -- DB (harbor_robots)
 
 ````
 
@@ -217,15 +205,15 @@ func (b *robotAuthReqCtxModifier) Modify(ctx *beegoctx.Context) bool {
 	if !ok {
 		return false
 	}
-        if !strings.HasPrefix("username", "harborrobots") {
+	if !strings.HasPrefix("username", "harborobots") {
 		return false
 	}
 	log.Debug("got user information via basic auth")
 
-	user, err := auth.LoginRobot(models.Robots{
-		Name: username,
-		Token:  password,
-	})
+	user, err := auth.LoginRobot(models.AuthModel{
+		Principal: username,
+		Password:  password,
+	})	
 	if err != nil {
 		log.Errorf("failed to authenticate %s: %v", username, err)
 		return false
@@ -245,12 +233,55 @@ func (b *robotAuthReqCtxModifier) Modify(ctx *beegoctx.Context) bool {
 
 ```
 
+- The authz for robot account rely on the jwt token.
 
-#### Implement a new security context for robot account
+#### Token
 
-./src/common/security/robots/context.go
+##### Config items
+
+| Item               | Value          | Level  |
+| ------------------ | -------------- | ------ |
+| Robot_Token_Expire | 30             | User   |
+| Robot_Token_Key    | /etc/robot_key | System |
+
+##### Model
 
 ```go
+
+type Token struct {
+    Raw       string                 
+    Method    SigningMethod          
+    Header    map[string]interface{} 
+    Claims    Claims                 
+    Signature string                 
+    Valid     bool                   
+}
+
+type Claims struct {
+    Audience  string `json:"aud,omitempty"`
+    ExpiresAt int64  `json:"exp,omitempty"`
+    Id        string `json:"jti,omitempty"`
+    IssuedAt  int64  `json:"iat,omitempty"`
+    Issuer    string `json:"iss,omitempty"`
+    NotBefore int64  `json:"nbf,omitempty"`
+    Subject   string `json:"sub,omitempty"`
+    Access []*ResourceActions `json:"access"`
+}
+
+type ResourceActions struct {
+	Name    string   `json:"name"`
+	Actions []string `json:"actions"`
+}
+
+```
+
+##### Scpoe -- Implement a new security context for robot account
+
+In the implementation of robot context, the func of HasReadPerm and HasWritePerm could validate the token scope, and block all the request to harbor with forbidden. 
+
+```go
+
+./src/common/security/robots/context.go
 
 // SecurityContext implements security.Context interface based on database
 type SecurityContext struct {
@@ -292,40 +323,28 @@ func (s *SecurityContext) IsSolutionUser() bool {
 
 // HasReadPerm returns whether the user has read permission to the project
 func (s *SecurityContext) HasReadPerm(projectIDOrName interface{}) bool {
-	// public project
-	public, err := s.pm.IsPublic(projectIDOrName)
-	if err != nil {
-		log.Errorf("failed to check the public of project %v: %v",
-			projectIDOrName, err)
-		return false
-	}
-	if public {
-		return true
-	}
-
 	// private project
-	if !s.IsAuthenticated() {
-		return false
-	}
-
-	robots := s.GetProjectRobots(projectIDOrName)
-	return len(robots) > 0
+    if !s.IsAuthenticated() {
+        return false
+    }
+    
+    robots := s.GetProjectRobots(projectIDOrName)
+    if len(roles) > 0 {
+        // needs to decode the token to get the access	
+    }
 }
 
 // HasWritePerm returns whether the user has write permission to the project
 func (s *SecurityContext) HasWritePerm(projectIDOrName interface{}) bool {
-	if !s.IsAuthenticated() {
-		return false
-	}
-
-	robots := s.GetProjectRobots(projectIDOrName)
-	for _, robot := range robots {
-		switch role.permission {
-		case common.PermissionWrite:
-			return true
-		}
-	}
-	return false
+    // private project
+    if !s.IsAuthenticated() {
+        return false
+    }
+    
+    robots := s.GetProjectRobots(projectIDOrName)
+    if len(roles) > 0 {
+        // needs to decode the token to get the access	
+    }
 }
 
 // HasAllPerm returns whether the user has all permissions to the project
@@ -335,11 +354,6 @@ func (s *SecurityContext) HasAllPerm(projectIDOrName interface{}) bool {
 
 // GetProjectRobots ...
 func (s *SecurityContext) GetProjectRobots(projectIDOrName interface{}) []int {
-	return nil
-}
-
-// GetPermissionsByRobot - Get the group role of current user to the project
-func (s *SecurityContext) GetRolesByGroup(projectIDOrName interface{}) []int {
 	return nil
 }
 
