@@ -8,13 +8,21 @@ Robot account is a machine user that have the permission to access harbor resour
 
 ## Motivation
 
-Currently, Harbor only has the capability of using the registered user to access resources, and do not support user to pull image with token.
+There are a lot of requirements from community would like to have the ability to work harbor with robot account. But, Harbor only has the capability of using the registered user to access resources, and do not support user to pull image with robot acccout.
+
+## User Stories
+
+### Story 1
+As a project administrator, I want to be able to create a robot account and grant project read/write permission to it.
+
+### Story 2
+As a dev ops developer, I want to be able to use the token of robot account to pull image.
 
 ## Solution
 
 This proposal only targets on the pull/push images workflow, and the design includes DB, API, authn/authz.
 
-### DB scheme/model
+### DB scheme
 
 1, the robot account is not a harbor user, so an new table introduced to store the robot info.
 
@@ -114,7 +122,7 @@ The robot account cannot login to harbor portal.
 No code change as all the robot accounts are stored in harbor_robots instead of harbor_user.
 ````
 
-### docker login
+### Docker login
 
 To distinguish the robot account from user, it will add a predefined prefix "harborobots" to the name of robot, like "harborobots_example1".
 
